@@ -1,0 +1,13 @@
+{
+    "domain": "fpvracehub_upload",
+    "name": "FPV Race Hub Upload",
+    "author": "J Ro",
+    "author_uri": "",
+    "description": "Sync RotorHazard event setup and saved runs to FPV Race Hub Results",
+    "documentation_uri": "",
+    "license": "MIT",
+    "license_uri": "",
+    "version": "0.1.0",
+    "required_rhapi_version": "1.4",
+    "zip_filename": "fpvracehub_upload.zip"
+}
