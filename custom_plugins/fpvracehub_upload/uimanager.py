@@ -38,9 +38,8 @@ class UIManager:
         self._rhapi = rhapi
         self._coordinator = coordinator
         self._cached_events: list[dict] = []
-        self._auto_upload_user_enabled = (
-            rhapi.db.option("fpvrh_auto_upload") == "1"
-        )
+        self._events_list_refreshed = False
+        self._auto_upload_user_enabled = False
         self._event_select_in_progress = False
         self._register_panel()
         self._register_fields()
@@ -48,7 +47,6 @@ class UIManager:
         rhapi.events.on(
             Evt.OPTION_SET, self.on_option_set, name="fpvrh_option_set"
         )
-        self.refresh_event_list()
 
     def _register_panel(self) -> None:
         self._rhapi.ui.register_panel(
@@ -169,7 +167,11 @@ class UIManager:
     def _register_event_selector(
         self, events: list[dict], selected: Union[str, int, None] = None
     ) -> None:
-        options = [UIFieldSelectOption(value="", label="— Select event —")]
+        if not self._events_list_refreshed:
+            placeholder = "Please refresh list"
+        else:
+            placeholder = "— Select event —"
+        options = [UIFieldSelectOption(value="", label=placeholder)]
         for event in events:
             event_id = event.get("id", "")
             label = event.get("name") or event.get("title") or str(event_id)
@@ -236,6 +238,7 @@ class UIManager:
         events = fetch_events(base_url, api_key)
 
         self._cached_events = events
+        self._events_list_refreshed = True
         current = self._rhapi.db.option("fpvrh_event_id")
         self._register_fields()
 

@@ -56,6 +56,7 @@ class UploadCoordinator:
         self._rhapi = rhapi
         self._state = SyncState(rhapi)
         self._ui_manager = None
+        self._rh_ready = False
         self._state.load()
 
         rhapi.events.on(Evt.STARTUP, self.on_startup, name="fpvrh_startup")
@@ -88,17 +89,23 @@ class UploadCoordinator:
 
     def on_startup(self, _args: Union[dict, None] = None) -> None:
         """Align structure generation fingerprint with the loaded RH database."""
-        full_data = export_full_results(self._rhapi)
-        if full_data is None:
-            return
-        fingerprint = compute_structure_fingerprint(full_data)
-        if self._state.structure_generation == 0:
-            self._state.structure_generation = fingerprint
-        logger.info(
-            "FPV Race Hub ready (structure_generation=%s, last_pushed=%s)",
-            self._state.structure_generation,
-            self._state.last_structure_generation_pushed,
-        )
+        self._rhapi.db.option_set("fpvrh_auto_upload", "0")
+        if self._ui_manager is not None:
+            self._ui_manager.sync_auto_upload_disabled()
+
+        try:
+            full_data = export_full_results(self._rhapi)
+            if full_data is not None:
+                fingerprint = compute_structure_fingerprint(full_data)
+                if self._state.structure_generation == 0:
+                    self._state.structure_generation = fingerprint
+            logger.info(
+                "FPV Race Hub ready (structure_generation=%s, last_pushed=%s)",
+                self._state.structure_generation,
+                self._state.last_structure_generation_pushed,
+            )
+        finally:
+            self._rh_ready = True
 
     def on_database_reset(self, _args: Union[dict, None] = None) -> None:
         self._state.reset()
@@ -114,18 +121,22 @@ class UploadCoordinator:
     def on_setup_changed(self, _args: Union[dict, None] = None) -> None:
         self._state.bump_structure_generation()
 
+    def _auto_upload_active(self) -> bool:
+        """True when RotorHazard is up and auto upload is enabled."""
+        return self._rh_ready and self._auto_upload_enabled()
+
     def on_heat_selected(self, _args: Union[dict, None] = None) -> None:
-        if not self._auto_upload_enabled():
+        if not self._auto_upload_active():
             return
         gevent.spawn(self._ensure_structure_pushed)
 
     def on_race_about_to_start(self, _args: Union[dict, None] = None) -> None:
-        if not self._auto_upload_enabled():
+        if not self._auto_upload_active():
             return
         gevent.spawn(self._ensure_structure_pushed)
 
     def on_laps_saved(self, args: Union[dict, None] = None) -> None:
-        if not self._auto_upload_enabled():
+        if not self._auto_upload_active():
             return
 
         race_meta_id = args.get("race_id") if args else None
