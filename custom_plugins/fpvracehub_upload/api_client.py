@@ -104,6 +104,86 @@ def export_append_data(rhapi: RHAPI, race_meta_id: int) -> dict[str, Any] | None
     return payload
 
 
+def heat_round_numbers(rhapi: RHAPI, heat_id: int | None) -> tuple[int, int] | None:
+    """Return 1-based (heat_number, next_round) for status messages."""
+    if heat_id is None or heat_id <= 0:
+        return None
+
+    heat = rhapi.db.heat_by_id(heat_id)
+    if heat is None:
+        return None
+
+    max_round = rhapi.db.heat_max_round(heat_id)
+    round_num = 1 if max_round is None else max_round + 1
+
+    class_heats = rhapi.db.heats_by_class(heat.class_id)
+    sorted_heats = sorted(
+        class_heats,
+        key=lambda row: (
+            row.order if row.order is not None else row.id,
+            row.id,
+        ),
+    )
+    heat_num = next(
+        (idx for idx, row in enumerate(sorted_heats, start=1) if row.id == heat.id),
+        heat.id,
+    )
+    return heat_num, round_num
+
+
+def format_heat_round_status(
+    rhapi: RHAPI, heat_id: int | None, template: str
+) -> str | None:
+    """Build a status line such as ``Heat 1, Round 2 race has started``."""
+    numbers = heat_round_numbers(rhapi, heat_id)
+    if numbers is None:
+        return None
+    heat_num, round_num = numbers
+    return template.format(heat=heat_num, round=round_num)
+
+
+def post_event_status(
+    base_url: str, event_id: int, api_key: str, message: str
+) -> tuple[bool, str]:
+    """POST a live status message to FPV Race Hub."""
+    body = json.dumps({"message": message}).encode("utf-8")
+    url = f"{base_url.rstrip('/')}/api/events/{event_id}/status"
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": api_key,
+    }
+
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            response_body = json.loads(resp.read().decode())
+            logger.info("FPV Race Hub status posted: %s", message)
+            return True, json.dumps(response_body, indent=2)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode()
+        last_error = f"Status post failed ({exc.code}): {detail}"
+        logger.error("FPV Race Hub status HTTP error: %s", last_error)
+        return False, last_error
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        last_error = f"Status post failed: {exc}"
+        logger.warning("FPV Race Hub status error: %s", exc)
+        return False, last_error
+
+
+def push_event_status(rhapi: RHAPI, message: str) -> bool:
+    """Send a status message when hub upload settings are configured."""
+    config = get_upload_config(rhapi)
+    if config is None:
+        logger.debug("FPV Race Hub status skipped: event or API key not configured")
+        return False
+
+    base_url, event_id, api_key = config
+    success, detail = post_event_status(base_url, event_id, api_key, message)
+    if not success:
+        logger.error("FPV Race Hub status failed: %s", detail)
+    return success
+
+
 def get_upload_config(rhapi: RHAPI) -> tuple[str, int, str] | None:
     """Return (base_url, event_id, api_key) when upload settings are valid."""
     host = rhapi.db.option("fpvrh_api_host") or ""

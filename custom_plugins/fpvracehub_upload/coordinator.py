@@ -11,7 +11,13 @@ import gevent
 from eventmanager import Evt
 from RHAPI import RHAPI
 
-from .api_client import export_full_results, push_append_results, push_structure_results
+from .api_client import (
+    export_full_results,
+    format_heat_round_status,
+    push_append_results,
+    push_event_status,
+    push_structure_results,
+)
 from .state import SyncState, compute_structure_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -75,6 +81,7 @@ class UploadCoordinator:
         rhapi.events.on(
             Evt.RACE_STAGE, self.on_race_about_to_start, name="fpvrh_race_stage"
         )
+        rhapi.events.on(Evt.RACE_STOP, self.on_race_stopped, name="fpvrh_race_stop")
         rhapi.events.on(Evt.LAPS_SAVE, self.on_laps_saved, name="fpvrh_laps_save")
         rhapi.events.on(
             Evt.LAPS_RESAVE, self.on_laps_saved, name="fpvrh_laps_resave"
@@ -125,15 +132,38 @@ class UploadCoordinator:
         """True when RotorHazard is up and auto upload is enabled."""
         return self._rh_ready and self._auto_upload_enabled()
 
-    def on_heat_selected(self, _args: Union[dict, None] = None) -> None:
+    def on_heat_selected(self, args: Union[dict, None] = None) -> None:
+        if self._rh_ready:
+            heat_id = args.get("heat_id") if args else self._rhapi.race.heat
+            gevent.spawn(
+                self._post_heat_status,
+                heat_id,
+                "Heat {heat}, Round {round} is next",
+            )
+
         if not self._auto_upload_active():
             return
         gevent.spawn(self._ensure_structure_pushed)
 
-    def on_race_about_to_start(self, _args: Union[dict, None] = None) -> None:
+    def on_race_about_to_start(self, args: Union[dict, None] = None) -> None:
+        heat_id = args.get("heat_id") if args else self._rhapi.race.heat
+        gevent.spawn(
+            self._post_heat_status,
+            heat_id,
+            "Heat {heat}, Round {round} race has started",
+        )
+
         if not self._auto_upload_active():
             return
         gevent.spawn(self._ensure_structure_pushed)
+
+    def on_race_stopped(self, args: Union[dict, None] = None) -> None:
+        heat_id = args.get("heat_id") if args else self._rhapi.race.heat
+        gevent.spawn(
+            self._post_heat_status,
+            heat_id,
+            "Heat {heat}, Round {round} race has finished",
+        )
 
     def on_laps_saved(self, args: Union[dict, None] = None) -> None:
         if not self._auto_upload_active():
@@ -147,6 +177,16 @@ class UploadCoordinator:
             return
 
         gevent.spawn(self._upload_saved_round, int(race_meta_id))
+
+    def _post_heat_status(self, heat_id: int | None, template: str) -> None:
+        message = format_heat_round_status(self._rhapi, heat_id, template)
+        if message is None:
+            logger.warning(
+                "FPV Race Hub status skipped: could not resolve heat/round (heat_id=%s)",
+                heat_id,
+            )
+            return
+        push_event_status(self._rhapi, message)
 
     def _ensure_structure_pushed(self) -> None:
         if not self._state.needs_structure_push():
